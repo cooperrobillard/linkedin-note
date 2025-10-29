@@ -43,7 +43,7 @@ async function waitForAny(selectors, { timeout=8000, root=document } = {}) {
   });
 }
 
-async function waitForValue(getter, { attempts=8, delay=250 } = {}) {
+async function waitForValue(getter, { attempts=30, delay=400 } = {}) {
   for (let i = 0; i < attempts; i++) {
     const value = getter();
     if (value) return value;
@@ -191,7 +191,10 @@ function pickOneDetail(x) {
 async function extractProfileSmart() {
   await waitForAny(NAME_SEL, { timeout: 8000, root: document });
 
-  const name = clean(await waitForValue(() => findName(document)) || "");
+  let name = clean(await waitForValue(() => findName(document)) || "");
+  if (!name && document.title) {
+    name = clean(document.title.replace(/\s*\|\s*LinkedIn.*$/i, ""));
+  }
   const headline = clean(await waitForValue(() => findHeadline(document)) || "");
 
   const { role, company, bullets } = extractExperience();
@@ -256,6 +259,10 @@ if (typeof module !== "undefined" && module.exports) {
     pickOneDetail,
     extractFirstName,
     sanitizeCompany,
-    waitForAny
+    waitForAny,
+    waitForValue,
+    findActivityTexts,
+    qaAll,
+    findSectionByHeading
   };
 }

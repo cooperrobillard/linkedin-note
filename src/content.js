@@ -1,35 +1,58 @@
-(function init() {
-  // Prevent duplicate injection when navigating within LinkedIn SPA
-  if (document.getElementById("cooper-note-chip")) return;
+const PROFILE_PATH_RE = /^\/in\/[^/]+\/?$/i;
 
-  // ===== Chip (launcher) =====
-  const chip = document.createElement("div");
-  chip.id = "cooper-note-chip";
-  chip.textContent = "Note";
-  Object.assign(chip.style, {
-    position: "fixed",
-    right: "16px",
-    bottom: "16px",
-    zIndex: "2147483647",
-    background: "#0a66c2",
-    color: "#fff",
-    borderRadius: "999px",
-    padding: "8px 12px",
-    font: "500 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial",
-    cursor: "pointer",
-    boxShadow: "0 2px 8px rgba(0,0,0,.15)"
-  });
-  document.body.appendChild(chip);
+if (window.top !== window) {
+  console.debug("[LN] skip iframe:", location.href);
+  return;
+}
 
-  // ===== Panel =====
-  const panel = document.createElement("div");
-  panel.id = "cooper-note-panel";
-  panel.style.cssText = `
-    position: fixed; right: 16px; bottom: 56px; width: 380px; max-width: calc(100vw - 32px);
-    background:#fff; color:#111; border:1px solid #e5e7eb; border-radius:12px; padding:12px;
-    box-shadow:0 12px 28px rgba(0,0,0,.18); z-index:2147483647; display:none;
-  `;
-  panel.innerHTML = `
+if (!/^https:\/\/(www\.)?linkedin\.com\/in\//i.test(location.href)) {
+  console.debug("[LN] skip non-profile:", location.href);
+  return;
+}
+
+if (!PROFILE_PATH_RE.test(location.pathname)) {
+  console.debug("[LN] skip subpath:", location.pathname);
+  return;
+}
+
+{
+  let booting = false;
+  let bootedPath = "";
+  let lastSkipPath = "";
+
+  async function initLinkedInNote() {
+    // Prevent duplicate injection when navigating within LinkedIn SPA
+    if (document.getElementById("cooper-note-chip")) return;
+    console.log("[LN] boot", location.href);
+
+    // ===== Chip (launcher) =====
+    const chip = document.createElement("div");
+    chip.id = "cooper-note-chip";
+    chip.textContent = "Note";
+    Object.assign(chip.style, {
+      position: "fixed",
+      right: "16px",
+      bottom: "16px",
+      zIndex: "2147483647",
+      background: "#0a66c2",
+      color: "#fff",
+      borderRadius: "999px",
+      padding: "8px 12px",
+      font: "500 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      cursor: "pointer",
+      boxShadow: "0 2px 8px rgba(0,0,0,.15)"
+    });
+    document.body.appendChild(chip);
+
+    // ===== Panel =====
+    const panel = document.createElement("div");
+    panel.id = "cooper-note-panel";
+    panel.style.cssText = `
+      position: fixed; right: 16px; bottom: 56px; width: 380px; max-width: calc(100vw - 32px);
+      background:#fff; color:#111; border:1px solid #e5e7eb; border-radius:12px; padding:12px;
+      box-shadow:0 12px 28px rgba(0,0,0,.18); z-index:2147483647; display:none;
+    `;
+    panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <strong>Connection note</strong>
       <button class="cooper-btn" id="cooper-close" style="border:1px solid #d1d5db;border-radius:8px;padding:4px 8px;background:#fff;cursor:pointer">×</button>
@@ -58,39 +81,40 @@
       </div>
     </div>
   `;
-  document.body.appendChild(panel);
+    document.body.appendChild(panel);
 
-  // ===== DOM refs =====
-  const draftEl     = panel.querySelector("#cooper-draft");
-  const countEl     = panel.querySelector("#cooper-count");
-  const detailEl    = panel.querySelector("#cooper-detail");
-  const closeBtn    = panel.querySelector("#cooper-close");
-  const genBtn      = panel.querySelector("#cooper-generate");
-  const copyBtn     = panel.querySelector("#cooper-copy");
-  const btnFriendly = panel.querySelector("#tone-friendly");
-  const btnNeutral  = panel.querySelector("#tone-neutral");
-  const btnFormal   = panel.querySelector("#tone-formal");
+    // ===== DOM refs =====
+    const draftEl     = panel.querySelector("#cooper-draft");
+    const countEl     = panel.querySelector("#cooper-count");
+    const detailEl    = panel.querySelector("#cooper-detail");
+    const closeBtn    = panel.querySelector("#cooper-close");
+    const genBtn      = panel.querySelector("#cooper-generate");
+    const copyBtn     = panel.querySelector("#cooper-copy");
+    const btnFriendly = panel.querySelector("#tone-friendly");
+    const btnNeutral  = panel.querySelector("#tone-neutral");
+    const btnFormal   = panel.querySelector("#tone-formal");
 
-  const guidanceEl = panel.querySelector("#cooper-guidance");
+    const guidanceEl = panel.querySelector("#cooper-guidance");
 
-// load saved value
-chrome.storage.sync.get({ userGuidance: "" }, ({ userGuidance }) => {
-  guidanceEl.value = userGuidance || "";
-});
+    // load saved value
+    chrome.storage.sync.get({ userGuidance: "" }, ({ userGuidance }) => {
+      guidanceEl.value = userGuidance || "";
+    });
 
-// save on change (light debounce)
-let gTimer = null;
-guidanceEl.addEventListener("input", () => {
-  clearTimeout(gTimer);
-  gTimer = setTimeout(() => {
-    chrome.storage.sync.set({ userGuidance: guidanceEl.value.trim() });
-  }, 300);
-});
+    // save on change (light debounce)
+    let gTimer = null;
+    guidanceEl.addEventListener("input", () => {
+      clearTimeout(gTimer);
+      gTimer = setTimeout(() => {
+        chrome.storage.sync.set({ userGuidance: guidanceEl.value.trim() });
+      }, 300);
+    });
 
-  // ===== State =====
-  let variants = [];
-  let idx = 0;
-  let busy = false;
+    // ===== State =====
+    let variants = [];
+    let idx = 0;
+    let busy = false;
+    let pending = false;
   let toneOverride = null; // "friendly" | "neutral" | "formal" | null
 
   // ===== Helpers =====
@@ -117,129 +141,178 @@ guidanceEl.addEventListener("input", () => {
     map[t]?.classList.add("is-active");
   }
 
-  async function copyTextToClipboard(text, onDone) {
-    try {
-      await navigator.clipboard.writeText(text);
-      onDone?.(true);
-    } catch {
+    async function copyTextToClipboard(text, onDone) {
       try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
+        await navigator.clipboard.writeText(text);
         onDone?.(true);
-      } catch (e2) {
-        onDone?.(false, e2);
+      } catch {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          onDone?.(true);
+        } catch (e2) {
+          onDone?.(false, e2);
+        }
       }
     }
-  }
 
-  // ===== Generate =====
-  const setDetailHint = (detail) => {
-    detailEl.textContent = detail ? `Using detail: "${detail}"` : "Using detail: (none)";
-  };
+    // ===== Generate =====
+    const setDetailHint = (detail) => {
+      detailEl.textContent = detail ? `Using detail: "${detail}"` : "Using detail: (none)";
+    };
 
-  async function doGenerate() {
-    if (busy) return;
-    busy = true;
-    try {
-      const x = await window.extractProfileSmart();
-      const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
-      const companyName = x.company || x.school || "your team";
-      const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
+    async function doGenerate() {
+      if (busy) {
+        pending = true;
+        return;
+      }
+      busy = true;
+      try {
+        const x = await window.extractProfileSmart();
+        const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
+        const companyName = x.company || x.school || "your team";
+        const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
 
-      setDetailHint(x.detailHint || "");
-
-      console.log("[LN][send]", {
-        name: x.name,
-        first: firstName,
-        company: companyName,
-        detailHint: x.detailHint,
-        profileSummary: profileSummary.slice(0, 240)
-      });
-
-      const resp = await chrome.runtime.sendMessage({
-        type: "GENERATE_NOTE_LLM",
-        payload: {
-          name: x.name || "",
-          firstName,
-          company: companyName,
-          profileSummary,
-          detailHint: x.detailHint || "",
-          toneOverride,
-          userGuidance: guidanceEl.value.trim()
-        }
-      });
-
-      if (resp?.variants?.length) variants = resp.variants;
-      else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
-      else variants = ["(no draft)"];
-
-      showVariant(0);
-    } finally {
-      busy = false;
-    }
-  }
-  // ===== Events =====
-  draftEl.addEventListener("input", updateCount);
-
-  chip.addEventListener("click", () => {
-    const opening = panel.style.display !== "block";
-    panel.style.display = opening ? "block" : "none";
-    if (opening && !variants.length && !busy) {
-      // optional: auto-generate on first open; comment out if you prefer manual
-      doGenerate();
-    }
-    updateCount();
-  });
-
-  closeBtn.addEventListener("click", () => {
-    panel.style.display = "none";
-  });
-
-  genBtn.addEventListener("click", () => doGenerate());
-
-  copyBtn.addEventListener("click", async () => {
-    const text = draftEl.value.trim();
-    copyBtn.disabled = true;
-    await copyTextToClipboard(text, (ok) => {
-      copyBtn.textContent = ok ? "Copied!" : "Copy failed";
-      setTimeout(() => {
-        copyBtn.textContent = "Copy";
-        copyBtn.disabled = false;
-      }, 1200);
-    });
-  });
-
-  // Tone buttons
-  btnFriendly?.addEventListener("click", () => { setTone("friendly"); doGenerate(); });
-  btnNeutral ?.addEventListener("click", () => { setTone("neutral");  doGenerate(); });
-  btnFormal  ?.addEventListener("click", () => { setTone("formal");   doGenerate(); });
-
-  // Restore last tone preference
-  chrome.storage.sync.get({ lastTone: null }, ({ lastTone }) => {
-    if (lastTone) setTone(lastTone);
-  });
-
-  // --- SPA navigation watcher ---
-  function initPanelAgainSafely() {
-    if (window.extractProfileSmart) {
-      window.extractProfileSmart().then(x => {
         setDetailHint(x.detailHint || "");
-        console.log("[LN][nav] refreshed", { name: x.name, company: x.company, detailHint: x.detailHint });
-      }).catch(err => console.warn("[LN][nav] refresh failed", err));
+
+        console.log("[LN][send]", {
+          name: x.name,
+          first: firstName,
+          company: companyName,
+          detailHint: x.detailHint,
+          profileSummary: profileSummary.slice(0, 240)
+        });
+
+        const resp = await chrome.runtime.sendMessage({
+          type: "GENERATE_NOTE_LLM",
+          payload: {
+            name: x.name || "",
+            firstName,
+            company: companyName,
+            profileSummary,
+            detailHint: x.detailHint || "",
+            toneOverride,
+            userGuidance: guidanceEl.value.trim()
+          }
+        });
+
+        if (resp?.variants?.length) variants = resp.variants;
+        else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
+        else variants = ["(no draft)"];
+
+        showVariant(0);
+      } finally {
+        busy = false;
+        if (pending) {
+          pending = false;
+          // allow any microtasks to settle before rerun
+          setTimeout(() => doGenerate(), 0);
+        }
+      }
+    }
+
+    // ===== Events =====
+    draftEl.addEventListener("input", updateCount);
+
+    chip.addEventListener("click", () => {
+      const opening = panel.style.display !== "block";
+      panel.style.display = opening ? "block" : "none";
+      if (opening && !variants.length && !busy) {
+        // optional: auto-generate on first open; comment out if you prefer manual
+        doGenerate();
+      }
+      updateCount();
+    });
+
+    closeBtn.addEventListener("click", () => {
+      panel.style.display = "none";
+    });
+
+    genBtn.addEventListener("click", () => doGenerate());
+
+    copyBtn.addEventListener("click", async () => {
+      const text = draftEl.value.trim();
+      copyBtn.disabled = true;
+      await copyTextToClipboard(text, (ok) => {
+        copyBtn.textContent = ok ? "Copied!" : "Copy failed";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+          copyBtn.disabled = false;
+        }, 1200);
+      });
+    });
+
+    // Tone buttons
+    btnFriendly?.addEventListener("click", () => { setTone("friendly"); doGenerate(); });
+    btnNeutral ?.addEventListener("click", () => { setTone("neutral");  doGenerate(); });
+    btnFormal  ?.addEventListener("click", () => { setTone("formal");   doGenerate(); });
+
+    // Restore last tone preference
+    chrome.storage.sync.get({ lastTone: null }, ({ lastTone }) => {
+      if (lastTone) setTone(lastTone);
+    });
+
+    window.__LN_note_doGenerate = doGenerate;
+    window.__LN_note_setDetail = setDetailHint;
+    await doGenerate();
+  }
+
+  function teardown() {
+    document.getElementById("cooper-note-chip")?.remove();
+    document.getElementById("cooper-note-panel")?.remove();
+    delete window.__LN_note_doGenerate;
+    delete window.__LN_note_setDetail;
+  }
+
+  async function initLinkedInNoteOnce() {
+    if (booting) return;
+    if (document.getElementById("cooper-note-chip")) {
+      if (bootedPath !== location.pathname && typeof window.__LN_note_doGenerate === "function") {
+        bootedPath = location.pathname;
+        await window.__LN_note_doGenerate();
+        return;
+      }
+      bootedPath = location.pathname;
+      return;
+    }
+    booting = true;
+    try {
+      await initLinkedInNote();
+      bootedPath = location.pathname;
+    } catch (err) {
+      console.error("[LN] init failed", err);
+    } finally {
+      booting = false;
     }
   }
 
-  let __ln_lastPath = location.pathname;
-  setInterval(() => {
-    if (location.pathname !== __ln_lastPath) {
-      __ln_lastPath = location.pathname;
-      setTimeout(() => initPanelAgainSafely(), 400);
+  async function ensureForRoute() {
+    if (!PROFILE_PATH_RE.test(location.pathname)) {
+      if (document.getElementById("cooper-note-chip")) {
+        teardown();
+      }
+      bootedPath = "";
+      if (lastSkipPath !== location.pathname) {
+        console.debug("[LN] skip subpath:", location.pathname);
+        lastSkipPath = location.pathname;
+      }
+      return;
     }
-  }, 800);
-})();
+    lastSkipPath = "";
+
+    if (bootedPath === location.pathname && document.getElementById("cooper-note-chip")) {
+      return;
+    }
+
+    await initLinkedInNoteOnce();
+  }
+
+  ensureForRoute();
+  setInterval(ensureForRoute, 800);
+}
