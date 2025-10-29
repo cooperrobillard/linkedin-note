@@ -43,7 +43,9 @@ function sanitizeCompany(s) {
     /\binternship\b/gi,
     /\bapprenticeship\b/gi,
     /self[-\s]?employed/gi,
-    /\bfreelance\b/gi
+    /\bfreelance\b/gi,
+    /\bpermanent\b/gi,
+    /\btemporary\b/gi
   ];
   employmentPatterns.forEach((re) => {
     out = out.replace(re, " ");
@@ -51,6 +53,9 @@ function sanitizeCompany(s) {
 
   const durationPattern = /\b\d+\s*(?:years?|yrs?|months?|mos?|weeks?|wks?)\b(?:\s+\d+\s*(?:years?|yrs?|months?|mos?|weeks?|wks?))?/gi;
   out = out.replace(durationPattern, " ");
+
+  // Remove combinations like "7 mos" with separators
+  out = out.replace(/\b\d+\s*(?:yrs?|years?|mos?|months?|weeks?|wks?)\b/gi, " ");
 
   out = out.replace(/\s*[•·|–—-]+\s*/g, " ");
 
@@ -60,6 +65,9 @@ function sanitizeCompany(s) {
 
   out = dedupeWords(out);
   out = out.replace(/^[,•·|–—-]+/, "").replace(/[,•·|–—-]+$/, "").trim();
+
+  // Remove lingering numeric tenure fragments
+  if (/^\d/.test(out)) out = "";
 
   return out;
 }
@@ -164,14 +172,26 @@ function extractProfileSmart() {
   const companyBest = sanitizeCompany(company) || sanitizeCompany(companyFromHeadline) || "";
   const roleBest = role || roleFromHeadline || "";
 
-  console.log("[LN] extracted:", { name, role: roleBest, company: companyBest, bullets, activity: activityArr?.[0] });
+  const detailHint = pickOneDetail({
+    name,
+    role: roleBest,
+    company: companyBest,
+    bullets,
+    activityArr,
+    headline,
+    school,
+    degree
+  }) || "";
+
+  console.log("[LN][extract]", { name, role: roleBest, company: companyBest, detailHint });
 
   return {
     name, headline,
     role: roleBest, company: companyBest,
-    bullets,              // array
-    activityArr,          // array
-    education, school, degree, skills
+    bullets,
+    activityArr,
+    education, school, degree, skills,
+    detailHint
   };
 }
 
@@ -203,6 +223,29 @@ function pickDetailSmart(x) {
   // 6) Skill fallback
   if (x.skills?.length) return c(x.skills[0]);
 
+  return "";
+}
+
+function extractFirstName(full="") {
+  if (!full) return "";
+  try {
+    const clean = full
+      .replace(/\s+/g, " ")
+      .replace(/[^\p{L}\p{M}\-'. ]+/gu, "")
+      .trim();
+    const first = clean.split(" ")[0] || "";
+    return first.replace(/^[^A-Za-z\p{L}\p{M}]+|[^A-Za-z\p{L}\p{M}]+$/gu, "");
+  } catch {
+    return (full.split(/\s+/)[0] || "").replace(/[^A-Za-z'-]/g, "");
+  }
+}
+
+function pickOneDetail(x = {}) {
+  if (x.role && x.company) return `${x.role} at ${x.company}`.trim();
+  if (x.bullets && x.bullets[0]) return x.bullets[0].trim();
+  if (x.activityArr && x.activityArr[0]) return x.activityArr[0].trim();
+  if (x.headline) return x.headline.trim();
+  if (x.school) return `student at ${x.school}`.trim();
   return "";
 }
 // Build a compact "full text" of the visible profile for the LLM (<= ~1200 chars)
@@ -239,10 +282,12 @@ function educationSnippet(x = {}) {
 if (typeof window !== "undefined") {
   window.extractProfileSmart = extractProfileSmart;
   window.pickDetailSmart = pickDetailSmart;
+  window.pickOneDetail = pickOneDetail;
+  window.extractFirstName = extractFirstName;
   window.buildProfileSummary = buildProfileSummary;
   window.educationSnippet = educationSnippet;
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { sanitizeCompany, extractExperience, dedupeWords, educationSnippet, extractEducation };
+  module.exports = { sanitizeCompany, extractExperience, dedupeWords, educationSnippet, extractEducation, pickOneDetail, extractFirstName };
 }

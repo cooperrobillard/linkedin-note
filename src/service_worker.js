@@ -2,8 +2,18 @@
 console.log("[LN] service worker loaded");
 
 // --- Helpers ---
-function polishAndClamp(s) {
-  return (s || "").replace(/\s+/g, " ").trim().slice(0, 200);
+
+function addGreeting(text, firstName="", tone="neutral") {
+  const core = (text || "").trim();
+  if (!core) return "";
+
+  const token = (firstName || "").trim() || "there";
+  const leading = core.replace(/^(hi|hello|hey|dear)\b[^A-Za-z0-9]*[A-Za-z0-9'.-]*[^A-Za-z0-9]*[\s,–—-]*/i, "").replace(/^[\s,–—-]+/, "").trim();
+  const greetingWord = tone === "formal" ? "Hello" : "Hi";
+  const base = `${greetingWord} ${token},`;
+  if (!leading) return base;
+  const body = leading.charAt(0).toUpperCase() + leading.slice(1);
+  return `${base} ${body}`;
 }
 function detectFocus(userGuidance="") {
   const g = (userGuidance || "").toLowerCase();
@@ -16,70 +26,48 @@ function detectFocus(userGuidance="") {
 
 function buildMessages({
   identityLine, company, includeCompany, companyInterestTemplate,
-  tone, profileSummary, name, userGuidance, detailHint
+  tone, profileSummary, name, firstName, userGuidance, detailHint
 }) {
   const focus = detectFocus(userGuidance);
   const companyLine = includeCompany && company
     ? companyInterestTemplate.replace("{{company}}", company)
     : "";
 
-  const toneSystem = {
-    neutral: [
-      "Tone: warm, natural, human; light contractions welcome; avoid stiff corporate phrasing.",
-      "Keep it approachable and confident; no emoji."
-    ].join(" "),
-    friendly: [
-      "Tone: texting a friend; very casual; lower-case greeting; short and punchy; a little slang is fine; no emoji.",
-      "Avoid formal punctuation; no em dashes; keep it breezy."
-    ].join(" "),
-    formal: [
-      "Tone: very professional, as if emailing a professor; fully grammatical; polished; no slang; can be 1–2 sentences if needed.",
-      "You may start with 'Dear {name},' or 'Hello {name},'."
-    ].join(" ")
-  }[tone] || "Tone: warm and natural.";
+  const toneLine = ({
+    friendly: "Tone: friendly, conversational, use contractions.",
+    neutral: "Tone: clear, natural, use contractions.",
+    formal: "Tone: concise and professional (still warm)."
+  })[tone] || "Tone: clear, natural, use contractions.";
 
-  const guidanceHardRule = userGuidance
-    ? `User guidance (highest priority): "${userGuidance}". You MUST reflect this guidance explicitly in what detail you reference and how you phrase the note.`
-    : "If no user guidance is given, pick the single most relevant detail.";
-
-  const focusHints = {
-    education: "Prefer education-related details (school, degree, program, lab).",
-    activity:  "Prefer recent activity (post/announcement) if present.",
-    experience:"Prefer a concrete experience bullet with action words or current role.",
-    skills:    "Prefer a specific skill or stack item that relates to the interest.",
-    auto:      "Choose the best single concrete detail."
-  }[focus];
-
-  const detailDirective = detailHint
-    ? `Central detail to weave in once: "${detailHint}" (feel free to paraphrase but keep the specific subject).`
-    : "Reference exactly ONE concrete detail from the profile summary that fits the guidance.";
-
-  const rules = [
-    guidanceHardRule,
-    focusHints,
-    detailDirective,
-    "First words must be a greeting like \"Hi {name},\" (use \"Hi there,\" if you don't have the name).",
-    "Write in a warm, conversational voice; make it sound human and lightly personal, not robotic.",
-    "Length: <=200 characters total.",
-    "No emojis. No links. No phone/meeting ask.",
-    `Include verbatim: "${identityLine}"`,
-    "Avoid boilerplate like 'so I can learn more'. Vary closers or omit if forced.",
-    "Do not imply the sender is an alumnus/alumna. The sender is a current undergraduate. If alumni context is relevant, phrase it as \"Boston College student reaching out to alumni\" or \"BC student\", never \"fellow alum\".",
-    "If the company value is empty or appears to be a school, do NOT claim the sender is interning or working at that school. Prefer neutral phrasing like \"interested in your team\" or omit the employer phrase.",
-    toneSystem
-  ].join("\n");
+  const focusLine = {
+    education: "Focus hint: prefer education-related detail if present.",
+    activity: "Focus hint: prefer recent activity/post if present.",
+    experience: "Focus hint: prefer a concrete experience bullet or current role detail.",
+    skills: "Focus hint: prefer a specific skill from the summary.",
+    auto: "Focus hint: choose the single strongest detail."
+  }[focus] || "";
 
   const system = [
-    "You write LinkedIn connection notes for a student.",
-    rules,
-    companyLine ? `Interest line to include: "${companyLine}"` : ""
+    "You write short LinkedIn connection notes for a student.",
+    "One sentence, 120–200 characters.",
+    "No emojis, no links, no meeting ask.",
+    `Include verbatim identity line: "${identityLine}"`,
+    "Reference EXACTLY ONE concrete detail from the profile summary.",
+    "Open with a personal greeting: \"Hi {name}, ...\". Use the provided firstName if available.",
+    "Avoid templated closers; vary or omit if forced.",
+    toneLine,
+    focusLine,
+    companyLine ? `Company interest line to weave in if natural: ${companyLine}` : "",
+    userGuidance ? `User guidance (must consider): ${userGuidance}` : "",
+    detailHint ? `Detail hint (prefer referencing this): ${detailHint}` : ""
   ].filter(Boolean).join("\n");
 
   const user = JSON.stringify({
     targetName: name || "",
+    firstName: firstName || "",
     company: company || "",
-    profileSummary,
-    detailHint: detailHint || ""
+    includeLine: companyLine,
+    profileSummary
   });
 
   return { system, user };
@@ -106,7 +94,7 @@ function preferByGuidance(variants, focus, profileSummary) {
   return [...variants].sort((a,b) => score(b) - score(a));
 }
 
-function toneShape(v, tone, name) {
+function toneShape(v, tone) {
   if (tone === "friendly") {
     let s = v.replace(/—/g, ",").trim();
     s = s.replace(/^hello\b/i, "Hi");
@@ -115,7 +103,6 @@ function toneShape(v, tone, name) {
   }
   if (tone === "formal") {
     let s = v;
-    if (!/^dear\b|^hello\b/i.test(s) && name) s = `Dear ${name}, ${s}`;
     s = s.replace(/\s{2,}/g, " ").trim();
     if (!/[.!?]$/.test(s)) s += ".";
     return s;
@@ -147,42 +134,15 @@ function fixSchoolAsEmployer(s) {
   return out;
 }
 
-function ensureGreeting(text, name, tone) {
-  const raw = (text || "").trim();
-  if (!raw) return raw;
-
-  const firstName = (name || "").trim().split(/\s+/)[0] || "";
-  const safeName = firstName.replace(/[^A-Za-z'.-]/g, "");
-  const placeholder = safeName || "there";
-  const word = tone === "formal" ? "Hello" : "Hi";
-  const greeting = `${word} ${placeholder},`;
-
-  let body = raw;
-  if (/^(hi|hello|hey|dear)\b/i.test(body)) {
-    const clip = body.match(/^(hi|hello|hey|dear)[^A-Za-z0-9]*[A-Za-z0-9'.-]*[^A-Za-z0-9]*[,\-–—:]?\s*/i);
-    if (clip) {
-      body = body.slice(clip[0].length).trim();
-    } else {
-      const comma = body.indexOf(",");
-      const dash = body.indexOf("—");
-      const cutoff = [comma, dash].filter(i => i >= 0);
-      const idx = cutoff.length ? Math.min(...cutoff) : -1;
-      body = idx >= 0 ? body.slice(idx + 1).trim() : body.replace(/^(hi|hello|hey|dear)\b\s*/i, "");
-    }
-  }
-
-  if (!body) return greeting;
-  return `${greeting} ${body}`.replace(/\s{2,}/g, " ").trim();
-}
-
-function formatVariants(candidates, focus, profileSummary, tone, name) {
+function formatVariants(candidates, focus, profileSummary, tone, firstName) {
   let out = (candidates || []).filter(Boolean);
   if (!out.length) return [];
   out = preferByGuidance(out, focus, profileSummary);
   return out.map(v => {
-    const shaped = toneShape(v, tone, name);
+    const shaped = toneShape(v, tone);
     const fixed = fixSchoolAsEmployer(fixAlumniClaims(shaped));
-    const greeted = ensureGreeting(fixed, name, tone);
+    const polished = polishAndClamp(fixed);
+    const greeted = addGreeting(polished, firstName, tone);
     return polishAndClamp(greeted);
   });
 }
@@ -202,43 +162,42 @@ function pickDetailFromSummary(summary) {
   return "";
 }
 
-function templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint }) {
+function templateNote({ name, firstName, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint, tone }) {
   const detail = (detailHint || pickDetailFromSummary(profileSummary) || "").replace(/\s+/g, " ").trim();
   const companyLine = includeCompany && company
     ? companyInterestTemplate.replace("{{company}}", company)
     : "";
 
-  let detailLine = "";
-  if (detail) {
-    const body = /^(your|the)\b/i.test(detail) ? detail : `your ${detail}`;
-    detailLine = `Loved ${body.replace(/\.$/, "")}.`;
-  }
+  const detailLine = detail
+    ? `Your ${detail.replace(/^your\s+/i, "").replace(/\.$/, "")} stood out—`
+    : "";
 
-  const pieces = [
-    `Hi ${name || "there"},`,
+  const coreParts = [
     identityLine,
     companyLine,
     detailLine,
-    "Happy to connect."
+    "keen to connect."
   ].filter(Boolean);
 
-  const base = pieces.join(" ");
-  return polishAndClamp(base);
+  const core = coreParts.join(" ").replace(/\s{2,}/g, " ").trim();
+  const polished = polishAndClamp(core);
+  return addGreeting(polished, firstName || name, tone);
 }
 
 // --- simple rate limit ---
 let lastCall = 0;
 
 const BAN_PHRASES = [
-  "so I can learn more",            // exact boilerplate
-  "so I can learn more.",           // with period
-  "so I can learn more about",      // variants
-  "I'd love to connect and",
-  "I'd love to connect",
-  "I would love to connect and",
-  "I’d love to connect and",
-  "I’d love to connect",
-  "connect so I can"                // awkward combo
+  "so I can learn more",
+  "so I can learn more.",
+  "so I can learn more about",
+  "i'd love to connect and",
+  "i would love to connect and",
+  "i’d love to connect and",
+  "would love to connect and",
+  "i'd love to connect",
+  "i’d love to connect",
+  "connect so I can"
 ];
 
 function dedupePhrases(s) {
@@ -250,7 +209,9 @@ function dedupePhrases(s) {
     out = out.replace(re, "");
   });
   // Clean leftover double spaces / stray punctuation
-  out = out.replace(/\s{2,}/g, " ").replace(/\s+([,.;!?])/g, "$1").trim();
+  out = out.replace(/\s{2,}/g, " ");
+  out = out.replace(/\s+([,.;!?])/g, "$1");
+  out = out.replace(/[\s,.–—-]+$/g, "").trim();
   // Merge double hyphen artifacts
   out = out.replace(/—\s*—/g, "—");
   return out;
@@ -286,15 +247,22 @@ lastCall = Date.now();
     const cfg = await chrome.storage.sync.get(defaults);
     const { apiKey, apiBase, model, identityLine, companyInterestTemplate, tone, includeCompany } = cfg;
 
-    const payload = msg.payload || {};
-    const { name, company, profileSummary, toneOverride, detailHint } = payload;
-    let userGuidance = payload.userGuidance || "";
+    const { name, firstName, company, profileSummary, detailHint, toneOverride, userGuidance: guidanceRaw } = msg.payload || {};
+    let userGuidance = guidanceRaw || "";
     if (userGuidance) {
       userGuidance = userGuidance.replace(/\bbc\s+alum(nus|na|ni)?\b/gi, "BC alumni connection (sender is a current BC student)");
     }
     const toneActive = toneOverride || tone;
     const focus = detectFocus(userGuidance);
-    console.log("[LN] payload:", { toneOverride, userGuidance, company, name, detailHint });
+    const nameForGreeting = (firstName || name || "").trim();
+    console.log("[LN][recv]", {
+      name,
+      firstName: nameForGreeting,
+      company,
+      detailHint,
+      guidance: userGuidance ? userGuidance.slice(0, 120) : "",
+      toneOverride
+    });
 
     const { system, user } = buildMessages({
       identityLine,
@@ -304,15 +272,23 @@ lastCall = Date.now();
       tone: toneActive,   // prefer override if set
       profileSummary,
       name,
+      firstName: nameForGreeting,
       userGuidance,
       detailHint
     });
 
-    const fallbackTemplate = templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint });
+    console.log("[LN][prompt]", {
+      system: system.slice(0, 240),
+      user: user.slice(0, 240)
+    });
+
+    const fallbackTemplate = templateNote({ name, firstName: nameForGreeting, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint, tone: toneActive });
 
     if (!apiKey) {
       console.error("[LN] missing API key");
-      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, name);
+      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting);
+      console.log("[LN][raw]", []);
+      console.log("[LN][variants]", fallbackVariants);
       sendResponse({ error: "NO_API_KEY", fallback: fallbackVariants[0] || fallbackTemplate });
       return;
     }
@@ -362,8 +338,10 @@ frequency_penalty: 0.3
         const payload = {
           status,
           body: (apiMsg || "").slice(0, 500),
-          variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, name)
+          variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting)
         };
+        console.log("[LN][raw]", []);
+        console.log("[LN][variants]", payload.variants);
 
         if (isNoQuota) {
           console.warn("[LN] OpenAI insufficient_quota (429)");
@@ -378,19 +356,24 @@ frequency_penalty: 0.3
 
       const data = await r.json();
       const raw = (data?.choices || []).map(c => c.message?.content || "").filter(Boolean);
+      console.log("[LN][raw]", raw);
       const candidates = raw.length
-        ? raw.map(polishAndClamp)
+        ? raw
         : [ fallbackTemplate ];
-      const variants = formatVariants(candidates, focus, profileSummary, toneActive, name);
+      const variants = formatVariants(candidates, focus, profileSummary, toneActive, nameForGreeting);
       console.log("[LN] guidance focus:", focus, variants);
+      console.log("[LN][variants]", variants);
 
       sendResponse({ variants });
     } catch (err) {
       console.error("[LN] fetch failed", err);
+      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting);
+      console.log("[LN][raw]", []);
+      console.log("[LN][variants]", fallbackVariants);
       sendResponse({
         error: "LLM_ERROR",
         detail: String(err),
-        variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, name)
+        variants: fallbackVariants
       });
     }
   })();

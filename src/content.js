@@ -139,23 +139,24 @@ guidanceEl.addEventListener("input", () => {
   }
 
   // ===== Generate =====
-  const looksLikeSchool = (s="") => /\b(university|college|school|institute|academy)\b/i.test(s);
-
   const setDetailHint = (detail) => {
-    detailEl.textContent = detail ? `Using: ${detail}` : "Using: (none)";
+    detailEl.textContent = detail ? `Using detail: "${detail}"` : "Using detail: (none)";
   };
 
-  async function doGenerate(forceNew=false) {
+  function refreshDetailFromExtraction() {
     const x = window.extractProfileSmart();
+    x.detailHint = x.detailHint || window.pickOneDetail(x) || "";
+    const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
     const profileSummary = window.buildProfileSummary(x);
-    const companyName = x.company && !looksLikeSchool(x.company) ? x.company : "";
-    const detailHint = window.pickDetailSmart({
-      ...x,
-      firstBullet: x.bullets?.[0] || "",
-      activity: x.activityArr?.[0] || ""
-    });
+    const companyName = x.company || x.school || "your team";
 
-    setDetailHint(detailHint);
+    setDetailHint(x.detailHint);
+
+    return { x, firstName, profileSummary, companyName };
+  }
+
+  async function doGenerate(forceNew=false) {
+    const { x, firstName, profileSummary, companyName } = refreshDetailFromExtraction();
 
     const payload = {
       name: x.name || "",
@@ -163,10 +164,17 @@ guidanceEl.addEventListener("input", () => {
       profileSummary,
       toneOverride: toneOverride,
       userGuidance: guidanceEl.value.trim(),
-      detailHint
+      detailHint: x.detailHint || "",
+      firstName: firstName || ""
     };
 
-    console.log("[LN] sending:", { toneOverride, userGuidance: guidanceEl.value.trim(), detailHint });
+    console.log("[LN][send]", {
+      name: x.name,
+      first: firstName,
+      company: companyName,
+      detailHint: x.detailHint,
+      profileSummary: profileSummary?.slice(0, 240)
+    });
 
     const resp = await chrome.runtime.sendMessage({
       type: "GENERATE_NOTE_LLM",
@@ -222,4 +230,23 @@ genBtn.addEventListener("click", () => doGenerate(true));
   chrome.storage.sync.get({ lastTone: null }, ({ lastTone }) => {
     if (lastTone) setTone(lastTone);
   });
+
+  // --- SPA navigation watcher ---
+  function initPanelAgainSafely() {
+    const { x } = refreshDetailFromExtraction();
+    if (!variants.length && !busy) {
+      doGenerate(false);
+    } else {
+      updateCount();
+    }
+    console.log("[LN][nav] refreshed", { name: x.name, company: x.company, detailHint: x.detailHint });
+  }
+
+  let lastPath = location.pathname;
+  setInterval(() => {
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      setTimeout(() => initPanelAgainSafely(), 400);
+    }
+  }, 800);
 })();
