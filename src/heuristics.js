@@ -52,6 +52,29 @@ async function waitForValue(getter, { attempts=30, delay=400 } = {}) {
   return getter();
 }
 
+async function gentleScrollUntil(checkFn, { step=600, ms=1200, max=5000 } = {}) {
+  const start = Date.now();
+  let lastY = -1;
+  let sameCount = 0;
+  while (Date.now() - start < max) {
+    if (checkFn()) return true;
+    window.scrollBy(0, step);
+    await new Promise(res => requestAnimationFrame(res));
+    await new Promise(res => setTimeout(res, ms / 6));
+    const y = window.scrollY;
+    sameCount = (y === lastY) ? sameCount + 1 : 0;
+    lastY = y;
+    if (sameCount > 6) break;
+  }
+  return checkFn();
+}
+
+function visible(el) {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
 // ---------- text cleanup ----------
 function clean(s) {
   return (s || "")
@@ -148,6 +171,32 @@ function metaFallback(root=document) {
   return { ogTitle: clean(ogTitle), ogDesc: clean(ogDesc) };
 }
 
+function firstByHeading(keywords = [], root=document) {
+  const candidates = qa("main h2, main h3, section h2, section h3, .pvs-header__title, .artdeco-card__header", root);
+  for (const h of candidates) {
+    const text = (t(h) || "").toLowerCase();
+    if (!text) continue;
+    if (keywords.some(kw => text.includes(kw))) {
+      return h.closest("section") || h.parentElement || h;
+    }
+  }
+  return null;
+}
+
+async function ensureRenderedSections() {
+  await gentleScrollUntil(() => {
+    const head = firstSel(HEADLINE_SEL);
+    const exp = firstSel(EXP_SECTION_SEL) || firstByHeading(["experience"]);
+    return (head && visible(head)) || (exp && visible(exp));
+  }, { max: 5000 });
+
+  const showAll = q("button[aria-expanded='false'][aria-controls*='experience'], button[aria-label*='Show all'][aria-expanded='false']");
+  if (showAll) {
+    showAll.click();
+    await new Promise(res => setTimeout(res, 600));
+  }
+}
+
 function findName(root=document) {
   const el = firstSel(NAME_SEL, root);
   if (el) return t(el);
@@ -160,9 +209,14 @@ function findName(root=document) {
 function findHeadline(root=document) {
   const el = firstSel(HEADLINE_SEL, root);
   if (el) return t(el);
-  const fallback = qaAll(["header .text-body-medium", "header p", "main .text-body-medium"], root)
-    .map((node) => t(node))
-    .find(Boolean);
+  const meta = metaFallback(root);
+  if (meta.ogDesc) return meta.ogDesc;
+  const fallback = qaAll([
+    "header .text-body-medium",
+    "header p",
+    "main .text-body-medium",
+    "main [dir='ltr']"
+  ], root).map(node => t(node)).find(Boolean);
   return fallback || "";
 }
 
@@ -217,6 +271,7 @@ function pickOneDetail(x) {
 
 async function extractProfileSmart() {
   await waitForAny(NAME_SEL, { timeout: 8000, root: document });
+  try { await ensureRenderedSections(); } catch {}
   await waitForAny([...HEADLINE_SEL, ...EXP_SECTION_SEL], { timeout: 12000, root: document });
 
   let name = clean(await waitForValue(() => findName(document)) || "");
@@ -230,7 +285,16 @@ async function extractProfileSmart() {
     headline = clean(ogDesc) || "";
   }
 
-  const { role, company, bullets } = extractExperience();
+  let { role, company, bullets } = extractExperience();
+  if (!role && !company) {
+    try { await ensureRenderedSections(); } catch {}
+    const retry = extractExperience();
+    if (retry.role || retry.company) {
+      role = retry.role;
+      company = retry.company;
+      bullets = retry.bullets;
+    }
+  }
 
   const eduSection = firstSel(["section[id*='education']", "section[data-view-name='profile-education']"]) || findSectionByHeading(["education"], document) || document;
   const school = t(firstSel(["li span[aria-hidden='true']", "a[href*='/school/']"], eduSection)) || "";
@@ -288,6 +352,7 @@ if (typeof window !== "undefined") {
   window.extractFirstName = extractFirstName;
   window.waitForAny = waitForAny;
   window.sanitizeCompany = sanitizeCompany;
+  window.ensureRenderedSections = ensureRenderedSections;
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -301,6 +366,7 @@ if (typeof module !== "undefined" && module.exports) {
     waitForValue,
     findActivityTexts,
     qaAll,
-    findSectionByHeading
+    findSectionByHeading,
+    ensureRenderedSections
   };
 }

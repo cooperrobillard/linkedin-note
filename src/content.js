@@ -163,6 +163,9 @@ if (!SHOULD_RUN) {
       busy = true;
       try {
         await new Promise(res => setTimeout(res, 500));
+        if (typeof window.ensureRenderedSections === "function") {
+          try { await window.ensureRenderedSections(); } catch {}
+        }
         const x = await window.extractProfileSmart();
         const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
         const companyName = x.company || x.school || "your team";
