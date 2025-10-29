@@ -43,6 +43,15 @@ async function waitForAny(selectors, { timeout=8000, root=document } = {}) {
   });
 }
 
+async function waitForValue(getter, { attempts=8, delay=250 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    const value = getter();
+    if (value) return value;
+    await new Promise(res => setTimeout(res, delay));
+  }
+  return getter();
+}
+
 // ---------- text cleanup ----------
 function clean(s) {
   return (s || "")
@@ -70,6 +79,7 @@ function extractFirstName(full) {
 // ---------- selectors ----------
 const NAME_SEL = [
   "h1.text-heading-xlarge",
+  "h1[data-anonymize='person-name']",
   "div.pv-text-details__left-panel h1",
   "section.artdeco-card h1",
   "[data-view-name='profile-card'] h1",
@@ -80,7 +90,8 @@ const HEADLINE_SEL = [
   ".pv-text-details__left-panel .text-body-medium",
   "div.inline-show-more-text",
   "[data-view-name='profile-card'] .text-body-medium",
-  "section.artdeco-card .text-body-medium"
+  "section.artdeco-card .text-body-medium",
+  "header .inline-show-more-text"
 ];
 
 const EXP_SECTION_SEL = [
@@ -116,8 +127,38 @@ function findActivityTexts(root=document) {
   return [];
 }
 
+function findSectionByHeading(keywords = [], root=document) {
+  const sections = qa("section", root);
+  for (const sec of sections) {
+    const heading = q("h2, h3, header, .pvs-header__title, .artdeco-card__header", sec);
+    const text = (t(heading) || "").toLowerCase();
+    if (!text) continue;
+    if (keywords.some((kw) => text.includes(kw))) return sec;
+  }
+  return null;
+}
+
+function findName(root=document) {
+  const el = firstSel(NAME_SEL, root);
+  if (el) return t(el);
+  const fallback = qaAll(["header h1", "main h1", "h1"], root)
+    .map((node) => t(node))
+    .find(Boolean);
+  return fallback || "";
+}
+
+function findHeadline(root=document) {
+  const el = firstSel(HEADLINE_SEL, root);
+  if (el) return t(el);
+  const fallback = qaAll(["header .text-body-medium", "header p", "main .text-body-medium"], root)
+    .map((node) => t(node))
+    .find(Boolean);
+  return fallback || "";
+}
+
 function extractExperience(root=document) {
-  const expRoot = firstSel(EXP_SECTION_SEL, root) || root;
+  let expRoot = firstSel(EXP_SECTION_SEL, root);
+  if (!expRoot) expRoot = findSectionByHeading(["experience"], root) || root;
   const card = firstSel(["li", "article", "div.pvs-entity"], expRoot) || expRoot;
 
   const role = t(firstSel(["span[aria-hidden='true']", "div[dir='ltr'] span"], card));
@@ -150,13 +191,12 @@ function pickOneDetail(x) {
 async function extractProfileSmart() {
   await waitForAny(NAME_SEL, { timeout: 8000, root: document });
 
-  const name = t(firstSel(NAME_SEL)) || "";
-  const headlineEl = firstSel(HEADLINE_SEL);
-  const headline = t(headlineEl) || "";
+  const name = clean(await waitForValue(() => findName(document)) || "");
+  const headline = clean(await waitForValue(() => findHeadline(document)) || "");
 
   const { role, company, bullets } = extractExperience();
 
-  const eduSection = firstSel(["section[id*='education']", "section[data-view-name='profile-education']"]) || document;
+  const eduSection = firstSel(["section[id*='education']", "section[data-view-name='profile-education']"]) || findSectionByHeading(["education"], document) || document;
   const school = t(firstSel(["li span[aria-hidden='true']", "a[href*='/school/']"], eduSection)) || "";
 
   const activityArr = findActivityTexts(document).slice(0, 3);
@@ -173,8 +213,8 @@ async function extractProfileSmart() {
   );
 
   const res = {
-    name: clean(name),
-    headline: clean(headline),
+    name,
+    headline,
     role: roleBest,
     company: companyBest,
     bullets,
