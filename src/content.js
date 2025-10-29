@@ -141,32 +141,44 @@ guidanceEl.addEventListener("input", () => {
   // ===== Generate =====
   const looksLikeSchool = (s="") => /\b(university|college|school|institute|academy)\b/i.test(s);
 
-  async function doGenerate(forceNew=false) {
-  const x = window.extractProfileSmart();
-  const profileSummary = window.buildProfileSummary(x);
-  const companyName = x.company && !looksLikeSchool(x.company) ? x.company : "";
-
-  const payload = {
-    name: x.name || "",
-    company: companyName,
-    profileSummary,
-    toneOverride: toneOverride,
-    userGuidance: guidanceEl.value.trim()
+  const setDetailHint = (detail) => {
+    detailEl.textContent = detail ? `Using: ${detail}` : "Using: (none)";
   };
 
-  console.log("[LN] sending:", { toneOverride, userGuidance: guidanceEl.value.trim() });
+  async function doGenerate(forceNew=false) {
+    const x = window.extractProfileSmart();
+    const profileSummary = window.buildProfileSummary(x);
+    const companyName = x.company && !looksLikeSchool(x.company) ? x.company : "";
+    const detailHint = window.pickDetailSmart({
+      ...x,
+      firstBullet: x.bullets?.[0] || "",
+      activity: x.activityArr?.[0] || ""
+    });
 
-  const resp = await chrome.runtime.sendMessage({
-    type: "GENERATE_NOTE_LLM",
-    payload
-  });
+    setDetailHint(detailHint);
 
-  if (resp?.variants?.length) variants = resp.variants;
-  else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
-  else variants = ["(no draft)"];
+    const payload = {
+      name: x.name || "",
+      company: companyName,
+      profileSummary,
+      toneOverride: toneOverride,
+      userGuidance: guidanceEl.value.trim(),
+      detailHint
+    };
 
-  showVariant(0);
-}
+    console.log("[LN] sending:", { toneOverride, userGuidance: guidanceEl.value.trim(), detailHint });
+
+    const resp = await chrome.runtime.sendMessage({
+      type: "GENERATE_NOTE_LLM",
+      payload
+    });
+
+    if (resp?.variants?.length) variants = resp.variants;
+    else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
+    else variants = ["(no draft)"];
+
+    showVariant(0);
+  }
 
 genBtn.addEventListener("click", () => doGenerate(true));
 

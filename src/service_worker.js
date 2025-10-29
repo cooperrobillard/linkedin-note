@@ -16,7 +16,7 @@ function detectFocus(userGuidance="") {
 
 function buildMessages({
   identityLine, company, includeCompany, companyInterestTemplate,
-  tone, profileSummary, name, userGuidance
+  tone, profileSummary, name, userGuidance, detailHint
 }) {
   const focus = detectFocus(userGuidance);
   const companyLine = includeCompany && company
@@ -50,15 +50,19 @@ function buildMessages({
     auto:      "Choose the best single concrete detail."
   }[focus];
 
+  const detailDirective = detailHint
+    ? `Central detail to weave in once: "${detailHint}" (feel free to paraphrase but keep the specific subject).`
+    : "Reference exactly ONE concrete detail from the profile summary that fits the guidance.";
+
   const rules = [
     guidanceHardRule,
     focusHints,
+    detailDirective,
     "First words must be a greeting like \"Hi {name},\" (use \"Hi there,\" if you don't have the name).",
     "Write in a warm, conversational voice; make it sound human and lightly personal, not robotic.",
     "Length: <=200 characters total.",
     "No emojis. No links. No phone/meeting ask.",
     `Include verbatim: "${identityLine}"`,
-    "Reference exactly ONE concrete detail from the profile summary that fits the guidance.",
     "Avoid boilerplate like 'so I can learn more'. Vary closers or omit if forced.",
     "Do not imply the sender is an alumnus/alumna. The sender is a current undergraduate. If alumni context is relevant, phrase it as \"Boston College student reaching out to alumni\" or \"BC student\", never \"fellow alum\".",
     "If the company value is empty or appears to be a school, do NOT claim the sender is interning or working at that school. Prefer neutral phrasing like \"interested in your team\" or omit the employer phrase.",
@@ -74,7 +78,8 @@ function buildMessages({
   const user = JSON.stringify({
     targetName: name || "",
     company: company || "",
-    profileSummary
+    profileSummary,
+    detailHint: detailHint || ""
   });
 
   return { system, user };
@@ -104,12 +109,7 @@ function preferByGuidance(variants, focus, profileSummary) {
 function toneShape(v, tone, name) {
   if (tone === "friendly") {
     let s = v.replace(/—/g, ",").trim();
-    s = s.replace(/^hi\b/i, "hi");
-    s = s.replace(/^hello\b/i, "hi");
-    if (!/^hi\b/i.test(s)) {
-      const who = (name || "there").trim();
-      s = `hi ${who || "there"}, ${s}`;
-    }
+    s = s.replace(/^hello\b/i, "Hi");
     s = s.replace(/\s{2,}/g, " ").trim();
     return s;
   }
@@ -148,33 +148,31 @@ function fixSchoolAsEmployer(s) {
 }
 
 function ensureGreeting(text, name, tone) {
-  let s = (text || "").trim();
-  if (!s) return s;
+  const raw = (text || "").trim();
+  if (!raw) return raw;
 
-  const target = (name || "").trim();
-  const placeholder = target || "there";
-  const toneWord = tone === "formal" ? "Hello" : "Hi";
-  const friendlyWord = tone === "friendly" ? "hi" : toneWord;
+  const firstName = (name || "").trim().split(/\s+/)[0] || "";
+  const safeName = firstName.replace(/[^A-Za-z'.-]/g, "");
+  const placeholder = safeName || "there";
+  const word = tone === "formal" ? "Hello" : "Hi";
+  const greeting = `${word} ${placeholder},`;
 
-  const hasGreeting = /^(hi|hello|hey|dear)\b/i.test(s);
-  if (hasGreeting) {
-    if (target && !new RegExp(`\\b${target.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(s.slice(0, 48))) {
-      s = s.replace(/^(hi|hello|hey|dear)(\s*)([,\-–—:]?)/i, (_m, word, space, punct) => {
-        const suffix = punct && punct.trim() ? punct : ",";
-        const spacer = space || " ";
-        return `${word}${spacer}${target}${suffix}`;
-      });
+  let body = raw;
+  if (/^(hi|hello|hey|dear)\b/i.test(body)) {
+    const clip = body.match(/^(hi|hello|hey|dear)[^A-Za-z0-9]*[A-Za-z0-9'.-]*[^A-Za-z0-9]*[,\-–—:]?\s*/i);
+    if (clip) {
+      body = body.slice(clip[0].length).trim();
+    } else {
+      const comma = body.indexOf(",");
+      const dash = body.indexOf("—");
+      const cutoff = [comma, dash].filter(i => i >= 0);
+      const idx = cutoff.length ? Math.min(...cutoff) : -1;
+      body = idx >= 0 ? body.slice(idx + 1).trim() : body.replace(/^(hi|hello|hey|dear)\b\s*/i, "");
     }
-    // Ensure we have a comma after the greeting for readability.
-    s = s.replace(/^(hi|hello|hey|dear)\s+([^,\s]+)(?![,\s])/i, (_m, word, who) => `${word} ${who},`);
-    return s;
   }
 
-  const remainder = s.replace(/^[,.;:!\-–—]+/, "").trim();
-  const comma = ",";
-  const greeting = `${friendlyWord} ${placeholder}${comma}`;
-  if (!remainder) return greeting;
-  return `${greeting} ${remainder}`;
+  if (!body) return greeting;
+  return `${greeting} ${body}`.replace(/\s{2,}/g, " ").trim();
 }
 
 function formatVariants(candidates, focus, profileSummary, tone, name) {
@@ -204,17 +202,23 @@ function pickDetailFromSummary(summary) {
   return "";
 }
 
-function templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary }) {
-  const detail = pickDetailFromSummary(profileSummary);
+function templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint }) {
+  const detail = (detailHint || pickDetailFromSummary(profileSummary) || "").replace(/\s+/g, " ").trim();
   const companyLine = includeCompany && company
     ? companyInterestTemplate.replace("{{company}}", company)
     : "";
+
+  let detailLine = "";
+  if (detail) {
+    const body = /^(your|the)\b/i.test(detail) ? detail : `your ${detail}`;
+    detailLine = `Loved ${body.replace(/\.$/, "")}.`;
+  }
 
   const pieces = [
     `Hi ${name || "there"},`,
     identityLine,
     companyLine,
-    detail ? `Loved your ${detail}.` : "",
+    detailLine,
     "Happy to connect."
   ].filter(Boolean);
 
@@ -230,7 +234,10 @@ const BAN_PHRASES = [
   "so I can learn more.",           // with period
   "so I can learn more about",      // variants
   "I'd love to connect and",
+  "I'd love to connect",
   "I would love to connect and",
+  "I’d love to connect and",
+  "I’d love to connect",
   "connect so I can"                // awkward combo
 ];
 
@@ -280,14 +287,14 @@ lastCall = Date.now();
     const { apiKey, apiBase, model, identityLine, companyInterestTemplate, tone, includeCompany } = cfg;
 
     const payload = msg.payload || {};
-    const { name, company, profileSummary, toneOverride } = payload;
+    const { name, company, profileSummary, toneOverride, detailHint } = payload;
     let userGuidance = payload.userGuidance || "";
     if (userGuidance) {
       userGuidance = userGuidance.replace(/\bbc\s+alum(nus|na|ni)?\b/gi, "BC alumni connection (sender is a current BC student)");
     }
     const toneActive = toneOverride || tone;
     const focus = detectFocus(userGuidance);
-    console.log("[LN] payload:", { toneOverride, userGuidance, company, name });
+    console.log("[LN] payload:", { toneOverride, userGuidance, company, name, detailHint });
 
     const { system, user } = buildMessages({
       identityLine,
@@ -297,10 +304,11 @@ lastCall = Date.now();
       tone: toneActive,   // prefer override if set
       profileSummary,
       name,
-      userGuidance
+      userGuidance,
+      detailHint
     });
 
-    const fallbackTemplate = templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary });
+    const fallbackTemplate = templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint });
 
     if (!apiKey) {
       console.error("[LN] missing API key");
