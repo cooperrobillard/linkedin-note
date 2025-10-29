@@ -2,16 +2,6 @@
 console.log("[LN] service worker loaded");
 
 // --- Helpers ---
-
-function ensureGreeting(text, firstName, fallbackName) {
-  const first = (firstName || fallbackName || "").trim() || "there";
-  let out = String(text || "");
-  out = out.replace(/^\s*(hi|hello)\s+[^,]*,?\s*/i, "");
-  out = out.replace(/^[\s,–—-]+/, "").trim();
-  if (!out) out = "Good to connect.";
-  const cap = out.charAt(0).toUpperCase() + out.slice(1);
-  return `Hi ${first}, ${cap}`.trim();
-}
 function detectFocus(userGuidance="") {
   const g = (userGuidance || "").toLowerCase();
   if (/educat|school|university|college|degree|alum/i.test(g)) return "education";
@@ -23,7 +13,7 @@ function detectFocus(userGuidance="") {
 
 function buildMessages({
   identityLine, company, includeCompany, companyInterestTemplate,
-  tone, profileSummary, name, firstName, userGuidance, detailHint
+  tone, profileSummary, name, firstName, userGuidance, detailHint, informalityLevel = 7
 }) {
   const toneLine = ({
     friendly: "Tone: friendly, conversational, use contractions.",
@@ -39,11 +29,10 @@ function buildMessages({
     "You write short LinkedIn connection notes for a student.",
     "One sentence, 120–200 characters.",
     "No emojis, no links, no meeting ask.",
-    `Include verbatim identity line: "${identityLine}"`,
     "Reference EXACTLY ONE concrete detail from the profile summary.",
-    "Open with a personal greeting: “Hi {name}, …”. Use firstName if provided.",
-    "Avoid templated closers; vary or omit if forced.",
     toneLine,
+    `Body informality target (1=formal, 10=casual): ${informalityLevel}/10. Write a single sentence body that feels natural at this level, with correct grammar and punctuation.`,
+    `Identity line: ${identityLine}. Do NOT repeat or paraphrase it.`,
     userGuidance ? `User guidance (must consider): ${userGuidance}` : "",
     detailHint ? `Detail hint (prefer referencing this): ${detailHint}` : "",
     companyLine ? `Company interest line to weave in if natural: ${companyLine}` : ""
@@ -54,7 +43,9 @@ function buildMessages({
     firstName: firstName || "",
     company: company || "",
     includeLine: companyLine,
-    profileSummary
+    profileSummary,
+    identityLine,
+    informalityLevel
   });
 
   return { system, user };
@@ -105,15 +96,15 @@ function fixSchoolAsEmployer(s) {
   return out;
 }
 
-function formatVariants(candidates, focus, profileSummary, tone, firstName, name) {
+function formatVariants(candidates, focus, profileSummary, informalityLevel, firstName, name, identityLine) {
   let out = (candidates || []).filter(Boolean);
   if (!out.length) return [];
   out = preferByGuidance(out, focus, profileSummary);
   return out.map(v => {
-    const fixed = fixSchoolAsEmployer(fixAlumniClaims(v));
-    const polished = polishAndClamp(fixed);
-    const greeted = ensureGreeting(polished, firstName, name);
-    return polishAndClamp(greeted);
+    let body = stripLeadingGreeting(v);
+    body = stripIdentityLine(body, identityLine);
+    body = dedupePhrases(fixSchoolAsEmployer(fixAlumniClaims(body)));
+    return canonicalizeNote({ firstName, name, identityLine, body, informalityLevel });
   });
 }
 
@@ -132,26 +123,17 @@ function pickDetailFromSummary(summary) {
   return "";
 }
 
-function templateNote({ name, firstName, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint, tone }) {
+function templateBody({ company, includeCompany, companyInterestTemplate, profileSummary, detailHint }) {
   const detail = (detailHint || pickDetailFromSummary(profileSummary) || "").replace(/\s+/g, " ").trim();
   const companyLine = includeCompany && company
-    ? companyInterestTemplate.replace("{{company}}", company)
+    ? companyInterestTemplate.replace("{{company}}", company).replace(/\.$/, "")
     : "";
 
   const detailLine = detail
-    ? `Your ${detail.replace(/^your\s+/i, "").replace(/\.$/, "")} stood out—`
+    ? `Your ${detail.replace(/^your\s+/i, "").replace(/\.$/, "")} stood out`
     : "";
 
-  const coreParts = [
-    identityLine,
-    companyLine,
-    detailLine,
-    "keen to connect."
-  ].filter(Boolean);
-
-  const core = coreParts.join(" ").replace(/\s{2,}/g, " ").trim();
-  const polished = polishAndClamp(core);
-  return ensureGreeting(polished, firstName, name);
+  return [companyLine, detailLine].filter(Boolean).join(" — ").trim() || "Good to connect";
 }
 
 // --- simple rate limit ---
@@ -181,7 +163,7 @@ function dedupePhrases(s) {
   // Clean leftover double spaces / stray punctuation
   out = out.replace(/\s{2,}/g, " ");
   out = out.replace(/\s+([,.;!?])/g, "$1");
-  out = out.replace(/[\s,.–—-]+$/g, "").trim();
+  out = out.replace(/[\s,–—-]+$/g, "").trim();
   // Merge double hyphen artifacts
   out = out.replace(/—\s*—/g, "—");
   return out;
@@ -192,6 +174,87 @@ function polishAndClamp(str) {
   if (s.length <= 200) return s;
   // Keep full text visible for manual editing; rely on count indicator for >200 chars
   return s;
+}
+
+function stripLeadingGreeting(s) {
+  return (s || "").replace(/^\s*(hi|hello|hey)\s+[^,]*,?\s*/i, "").trim();
+}
+
+function stripIdentityLine(s, identityLine) {
+  let out = s || "";
+  if (!out) return out;
+
+  if (identityLine) {
+    const esc = identityLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp("\\b" + esc + "\\b\\.?\\s*", "i"), "").trim();
+  }
+
+  const selfIntroRe = /\b(i\s*(?:'|’)?m|i\s+am)\s+cooper\b[^.?!]*\b(boston\s+college|bc)\b[^.?!]*[.?!]?\s*/i;
+  out = out.replace(selfIntroRe, "").trim();
+
+  const firstSentenceRe = /^\s*(i\s*(?:'|’)?m|i\s+am)\s+cooper\b[^.?!]*[.?!]\s*/i;
+  out = out.replace(firstSentenceRe, "").trim();
+
+  return out;
+}
+
+function firstSentenceOnly(s) {
+  const text = String(s || "");
+  const match = text.match(/^[\s\S]*?[.?!](?=\s|$)/);
+  return (match ? match[0] : text).trim();
+}
+
+function sentenceClean(s) {
+  let out = (s || "").replace(/\s{2,}/g, " ").replace(/\s+([,.;!?])/g, "$1").trim();
+  if (out && !/[.?!]$/.test(out)) out += ".";
+  return out;
+}
+
+function pickClosing(level=7) {
+  const n = Math.max(1, Math.min(10, Math.round(level)));
+  let arr;
+  if (n <= 3) {
+    arr = [
+      "I would value the connection.",
+      "I appreciate your time.",
+      "I look forward to connecting."
+    ];
+  } else if (n <= 6) {
+    arr = [
+      "Looking forward to connecting.",
+      "Would love to learn more.",
+      "Appreciate your time."
+    ];
+  } else if (n <= 8) {
+    arr = [
+      "Looking forward to connecting soon.",
+      "Would love to swap stories.",
+      "Hope we can chat soon."
+    ];
+  } else {
+    arr = [
+      "Can't wait to connect.",
+      "Hope to learn more soon.",
+      "Catch you soon."
+    ];
+  }
+  const choice = arr[Math.floor(Math.random() * arr.length)] || "Looking forward to connecting.";
+  return choice.replace(/[.]*$/, "").trim() + ".";
+}
+
+function canonicalizeNote({ firstName, name, identityLine, body, informalityLevel }) {
+  const greet = (firstName || name || "there").trim() || "there";
+  const greeting = `Hi ${greet},`;
+  const id = identityLine ? `${identityLine.replace(/[.]\s*$/, "")}.` : "";
+  const bodySentence = sentenceClean(firstSentenceOnly(body));
+  const closing = pickClosing(informalityLevel);
+
+  let out = [greeting, id, bodySentence, closing].filter(Boolean).join(" ");
+  out = dedupePhrases(out);
+  out = polishAndClamp(out).trim();
+  out = out.replace(/[!?]+$/, "").trim();
+  if (!/[.]$/.test(out)) out += ".";
+  return out;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -217,12 +280,13 @@ lastCall = Date.now();
     const cfg = await chrome.storage.sync.get(defaults);
     const { apiKey, apiBase, model, identityLine, companyInterestTemplate, tone, includeCompany } = cfg;
 
-    const { name, firstName, company, profileSummary, detailHint, toneOverride, userGuidance } = msg.payload || {};
+    const { name, firstName, company, profileSummary, detailHint, informalityLevel: informalityRaw, userGuidance } = msg.payload || {};
+    const informalityLevel = Number(informalityRaw) || 7;
     let guidance = userGuidance || "";
     if (guidance) {
       guidance = guidance.replace(/\bbc\s+alum(nus|na|ni)?\b/gi, "BC alumni connection (sender is a current BC student)");
     }
-    const toneActive = toneOverride || tone;
+    const toneActive = tone;
     const focus = detectFocus(guidance);
     const nameForGreeting = (firstName || name || "").trim();
     console.log("[LN][recv]", {
@@ -231,7 +295,7 @@ lastCall = Date.now();
       company,
       detailHint,
       guidance: guidance ? guidance.slice(0, 120) : "",
-      toneOverride
+      informalityLevel
     });
 
     const { system, user } = buildMessages({
@@ -239,12 +303,13 @@ lastCall = Date.now();
       company,
       includeCompany,
       companyInterestTemplate,
-      tone: toneActive,   // prefer override if set
+      tone: toneActive,
       profileSummary,
       name,
       firstName: nameForGreeting,
       userGuidance: guidance,
-      detailHint
+      detailHint,
+      informalityLevel
     });
 
     console.log("[LN][prompt]", {
@@ -252,14 +317,14 @@ lastCall = Date.now();
       user: user.slice(0, 240)
     });
 
-    const fallbackTemplate = templateNote({ name, firstName: nameForGreeting, identityLine, company, includeCompany, companyInterestTemplate, profileSummary, detailHint, tone: toneActive });
+    const fallbackBody = templateBody({ company, includeCompany, companyInterestTemplate, profileSummary, detailHint });
 
     if (!apiKey) {
       console.error("[LN] missing API key");
-      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name);
+      const fallbackVariants = formatVariants([fallbackBody], focus, profileSummary, informalityLevel, nameForGreeting, name, identityLine);
       console.log("[LN][raw]", []);
       console.log("[LN][variants]", fallbackVariants);
-      sendResponse({ error: "NO_API_KEY", fallback: fallbackVariants[0] || fallbackTemplate });
+      sendResponse({ error: "NO_API_KEY", fallback: fallbackVariants[0] || canonicalizeNote({ firstName: nameForGreeting, name, identityLine, body: fallbackBody, tone: toneActive }) });
       return;
     }
 
@@ -308,7 +373,7 @@ frequency_penalty: 0.3
         const payload = {
           status,
           body: (apiMsg || "").slice(0, 500),
-          variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name)
+          variants: formatVariants([fallbackBody], focus, profileSummary, informalityLevel, nameForGreeting, name, identityLine)
         };
         console.log("[LN][raw]", []);
         console.log("[LN][variants]", payload.variants);
@@ -329,15 +394,15 @@ frequency_penalty: 0.3
       console.log("[LN][raw]", raw);
       const candidates = raw.length
         ? raw
-        : [ fallbackTemplate ];
-      const variants = formatVariants(candidates, focus, profileSummary, toneActive, nameForGreeting, name);
+        : [ fallbackBody ];
+      const variants = formatVariants(candidates, focus, profileSummary, informalityLevel, nameForGreeting, name, identityLine);
       console.log("[LN] guidance focus:", focus, variants);
       console.log("[LN][variants]", variants);
 
       sendResponse({ variants });
     } catch (err) {
       console.error("[LN] fetch failed", err);
-      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name);
+      const fallbackVariants = formatVariants([fallbackBody], focus, profileSummary, informalityLevel, nameForGreeting, name, identityLine);
       console.log("[LN][raw]", []);
       console.log("[LN][variants]", fallbackVariants);
       sendResponse({
