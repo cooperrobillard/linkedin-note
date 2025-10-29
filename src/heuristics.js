@@ -91,7 +91,10 @@ const HEADLINE_SEL = [
   "div.inline-show-more-text",
   "[data-view-name='profile-card'] .text-body-medium",
   "section.artdeco-card .text-body-medium",
-  "header .inline-show-more-text"
+  "header .inline-show-more-text",
+  "div[data-view-name='profile-card'] [dir='ltr']",
+  "main [data-test-id='profile-about'] [dir='ltr']",
+  "main h2 + div[dir='ltr']"
 ];
 
 const EXP_SECTION_SEL = [
@@ -138,6 +141,13 @@ function findSectionByHeading(keywords = [], root=document) {
   return null;
 }
 
+function metaFallback(root=document) {
+  const doc = root?.ownerDocument || document;
+  const ogTitle = doc.querySelector('meta[property="og:title"]')?.content || "";
+  const ogDesc = doc.querySelector('meta[name="description"]')?.content || "";
+  return { ogTitle: clean(ogTitle), ogDesc: clean(ogDesc) };
+}
+
 function findName(root=document) {
   const el = firstSel(NAME_SEL, root);
   if (el) return t(el);
@@ -159,14 +169,31 @@ function findHeadline(root=document) {
 function extractExperience(root=document) {
   let expRoot = firstSel(EXP_SECTION_SEL, root);
   if (!expRoot) expRoot = findSectionByHeading(["experience"], root) || root;
-  const card = firstSel(["li", "article", "div.pvs-entity"], expRoot) || expRoot;
+  const card = firstSel([
+    "li.artdeco-list__item",
+    "div.pvs-entity",
+    "article",
+    "li"
+  ], expRoot) || expRoot;
 
-  const role = t(firstSel(["span[aria-hidden='true']", "div[dir='ltr'] span"], card));
-  const companyRaw = t(firstSel(["a[href*='/company/']", "span.t-14.t-normal", "span.t-14"], card));
-  const company = sanitizeCompany(companyRaw);
+  const role = t(firstSel([
+    "span[aria-hidden='true']",
+    "span.t-bold",
+    "div[dir='ltr'] span",
+    "span.inline-show-more-text"
+  ], card));
+
+  const companyRaw = t(firstSel([
+    "a[href*='/company/']",
+    "span.t-14.t-normal",
+    "span.t-14",
+    "div[dir='ltr'] a",
+    "span.inline-show-more-text"
+  ], card));
+
   const bullets = qa("li", card).map(el => t(el)).filter(Boolean).slice(0, 3);
 
-  return { role, company, bullets };
+  return { role, company: sanitizeCompany(companyRaw), bullets };
 }
 
 function extractHeadline(root=document) {
@@ -190,12 +217,18 @@ function pickOneDetail(x) {
 
 async function extractProfileSmart() {
   await waitForAny(NAME_SEL, { timeout: 8000, root: document });
+  await waitForAny([...HEADLINE_SEL, ...EXP_SECTION_SEL], { timeout: 12000, root: document });
 
   let name = clean(await waitForValue(() => findName(document)) || "");
   if (!name && document.title) {
     name = clean(document.title.replace(/\s*\|\s*LinkedIn.*$/i, ""));
   }
-  const headline = clean(await waitForValue(() => findHeadline(document)) || "");
+
+  let headline = clean(await waitForValue(() => findHeadline(document)) || "");
+  if (!headline) {
+    const { ogDesc } = metaFallback();
+    headline = clean(ogDesc) || "";
+  }
 
   const { role, company, bullets } = extractExperience();
 
@@ -208,12 +241,17 @@ async function extractProfileSmart() {
   const { roleFromHeadline, companyFromHeadline } = extractHeadline(document);
 
   const roleBest = clean(role || roleFromHeadline || "");
-  const companyBest = clean(
+  let companyBest = clean(
     sanitizeCompany(company) ||
     sanitizeCompany(companyFromHeadline) ||
     sanitizeCompany(school) ||
     ""
   );
+  if (!companyBest) {
+    const { ogDesc } = metaFallback();
+    companyBest = clean(sanitizeCompany(ogDesc));
+  }
+  if (!companyBest) companyBest = "";
 
   const res = {
     name,

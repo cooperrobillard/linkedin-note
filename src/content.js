@@ -160,24 +160,38 @@ if (!SHOULD_RUN) {
           pending = true;
           return;
         }
-        busy = true;
-        try {
-          const x = await window.extractProfileSmart();
-          const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
-          const companyName = x.company || x.school || "your team";
-          const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
+      busy = true;
+      try {
+        await new Promise(res => setTimeout(res, 500));
+        const x = await window.extractProfileSmart();
+        const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
+        const companyName = x.company || x.school || "your team";
+        const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
 
-          setDetailHint(x.detailHint || "");
+        if (!x.role && !x.company && !x.headline) {
+          await new Promise(res => setTimeout(res, 800));
+          try {
+            const retry = await window.extractProfileSmart();
+            if (retry && (retry.role || retry.company || retry.headline)) {
+              Object.assign(x, retry);
+            }
+          } catch (retryErr) {
+            console.warn("[LN] retry extract failed", retryErr);
+          }
+        }
 
-          console.log("[LN][send]", {
-            name: x.name,
-            first: firstName,
+        setDetailHint(x.detailHint || "");
+
+        console.log("[LN][send]", {
+          name: x.name,
+          first: firstName,
             company: companyName,
             detailHint: x.detailHint,
             profileSummary: profileSummary.slice(0, 240)
           });
 
-          const resp = await chrome.runtime.sendMessage({
+        const resp = await Promise.race([
+          chrome.runtime.sendMessage({
             type: "GENERATE_NOTE_LLM",
             payload: {
               name: x.name || "",
@@ -188,11 +202,19 @@ if (!SHOULD_RUN) {
               toneOverride,
               userGuidance: guidanceEl.value.trim()
             }
-          });
+          }),
+          new Promise(resolve => setTimeout(() => resolve({ error: "TIMEOUT" }), 15000))
+        ]);
 
-          if (resp?.variants?.length) variants = resp.variants;
-          else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
-          else variants = ["(no draft)"];
+        if (resp?.error === "TIMEOUT") {
+          variants = ["(timeout generating note)"];
+        } else if (resp?.variants?.length) {
+          variants = resp.variants;
+        } else if (resp?.error) {
+          variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
+        } else {
+          variants = ["(no draft)"];
+        }
 
           showVariant(0);
         } finally {
