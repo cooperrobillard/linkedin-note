@@ -2,8 +2,15 @@
 
 // ---------- tiny DOM helpers ----------
 function t(el) { return el ? (el.textContent || "").replace(/\s+/g, " ").trim() : ""; }
-function q(sel, root=document) { return root.querySelector(sel); }
-function qa(sel, root=document) { return Array.from(root.querySelectorAll(sel)); }
+function q(sel, root=document) { try { return root.querySelector(sel); } catch { return null; } }
+function qa(sel, root=document) { try { return Array.from(root.querySelectorAll(sel)); } catch { return []; } }
+function qaAll(selectors, root=document) {
+  const out = [];
+  for (const sel of selectors) {
+    try { out.push(...root.querySelectorAll(sel)); } catch { /* ignore invalid */ }
+  }
+  return out;
+}
 function firstSel(selectors, root=document) {
   for (const s of selectors) {
     const el = q(s, root);
@@ -83,12 +90,31 @@ const EXP_SECTION_SEL = [
 
 const ACTIVITY_SEL = [
   "section[data-view-name='profile-activities'] li span[aria-hidden='true']",
-  "section:has(h2:matches-css(^Activity$)) li span[aria-hidden='true']"
+  "section[id*='activity'] li span[aria-hidden='true']",
+  "section[id*='activity'] li a[aria-hidden='true'] span"
 ];
 
 const SKILL_SEL = [
-  "section[data-view-name='profile-skills'] li span[aria-hidden='true']"
+  "section[data-view-name='profile-skills'] li span[aria-hidden='true']",
+  "section[id*='skills'] li span[aria-hidden='true']"
 ];
+
+function findActivityTexts(root=document) {
+  const direct = qaAll(ACTIVITY_SEL, root).map(el => t(el)).filter(Boolean);
+  if (direct.length) return direct;
+
+  const sections = qa("section", root);
+  for (const sec of sections) {
+    const h = q("h2, h3, header, .pvs-header__title, .artdeco-card__header", sec);
+    const ht = (t(h) || "").toLowerCase();
+    if (ht.includes("activity") || ht.includes("activities")) {
+      const items = qa("li span[aria-hidden='true'], li a span[aria-hidden='true']", sec)
+        .map(el => t(el)).filter(Boolean);
+      if (items.length) return items;
+    }
+  }
+  return [];
+}
 
 function extractExperience(root=document) {
   const expRoot = firstSel(EXP_SECTION_SEL, root) || root;
@@ -133,8 +159,8 @@ async function extractProfileSmart() {
   const eduSection = firstSel(["section[id*='education']", "section[data-view-name='profile-education']"]) || document;
   const school = t(firstSel(["li span[aria-hidden='true']", "a[href*='/school/']"], eduSection)) || "";
 
-  const activityArr = qa(ACTIVITY_SEL).map(el => t(el)).filter(Boolean).slice(0, 3);
-  const skills = qa(SKILL_SEL).map(el => t(el)).filter(Boolean).slice(0, 5);
+  const activityArr = findActivityTexts(document).slice(0, 3);
+  const skills = qaAll(SKILL_SEL, document).map(el => t(el)).filter(Boolean).slice(0, 5);
 
   const { roleFromHeadline, companyFromHeadline } = extractHeadline(document);
 
