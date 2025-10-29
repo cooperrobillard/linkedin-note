@@ -143,53 +143,47 @@ guidanceEl.addEventListener("input", () => {
     detailEl.textContent = detail ? `Using detail: "${detail}"` : "Using detail: (none)";
   };
 
-  function refreshDetailFromExtraction() {
-    const x = window.extractProfileSmart();
-    x.detailHint = x.detailHint || window.pickOneDetail(x) || "";
-    const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
-    const profileSummary = window.buildProfileSummary(x);
-    const companyName = x.company || x.school || "your team";
+  async function doGenerate() {
+    if (busy) return;
+    busy = true;
+    try {
+      const x = await window.extractProfileSmart();
+      const profileSummary = window.buildProfileSummary ? window.buildProfileSummary(x) : "";
+      const companyName = x.company || x.school || "your team";
+      const firstName = window.extractFirstName ? window.extractFirstName(x.name) : ((x.name || "").split(/\s+/)[0] || "");
 
-    setDetailHint(x.detailHint);
+      setDetailHint(x.detailHint || "");
 
-    return { x, firstName, profileSummary, companyName };
+      console.log("[LN][send]", {
+        name: x.name,
+        first: firstName,
+        company: companyName,
+        detailHint: x.detailHint,
+        profileSummary: profileSummary.slice(0, 240)
+      });
+
+      const resp = await chrome.runtime.sendMessage({
+        type: "GENERATE_NOTE_LLM",
+        payload: {
+          name: x.name || "",
+          firstName,
+          company: companyName,
+          profileSummary,
+          detailHint: x.detailHint || "",
+          toneOverride,
+          userGuidance: guidanceEl.value.trim()
+        }
+      });
+
+      if (resp?.variants?.length) variants = resp.variants;
+      else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
+      else variants = ["(no draft)"];
+
+      showVariant(0);
+    } finally {
+      busy = false;
+    }
   }
-
-  async function doGenerate(forceNew=false) {
-    const { x, firstName, profileSummary, companyName } = refreshDetailFromExtraction();
-
-    const payload = {
-      name: x.name || "",
-      company: companyName,
-      profileSummary,
-      toneOverride: toneOverride,
-      userGuidance: guidanceEl.value.trim(),
-      detailHint: x.detailHint || "",
-      firstName: firstName || ""
-    };
-
-    console.log("[LN][send]", {
-      name: x.name,
-      first: firstName,
-      company: companyName,
-      detailHint: x.detailHint,
-      profileSummary: profileSummary?.slice(0, 240)
-    });
-
-    const resp = await chrome.runtime.sendMessage({
-      type: "GENERATE_NOTE_LLM",
-      payload
-    });
-
-    if (resp?.variants?.length) variants = resp.variants;
-    else if (resp?.error) variants = [`Error: ${resp.error}${resp.status ? " ("+resp.status+")" : ""}`];
-    else variants = ["(no draft)"];
-
-    showVariant(0);
-  }
-
-genBtn.addEventListener("click", () => doGenerate(true));
-
   // ===== Events =====
   draftEl.addEventListener("input", updateCount);
 
@@ -198,7 +192,7 @@ genBtn.addEventListener("click", () => doGenerate(true));
     panel.style.display = opening ? "block" : "none";
     if (opening && !variants.length && !busy) {
       // optional: auto-generate on first open; comment out if you prefer manual
-      doGenerate(false);
+      doGenerate();
     }
     updateCount();
   });
@@ -207,7 +201,7 @@ genBtn.addEventListener("click", () => doGenerate(true));
     panel.style.display = "none";
   });
 
-  genBtn.addEventListener("click", () => doGenerate(true));
+  genBtn.addEventListener("click", () => doGenerate());
 
   copyBtn.addEventListener("click", async () => {
     const text = draftEl.value.trim();
@@ -222,9 +216,9 @@ genBtn.addEventListener("click", () => doGenerate(true));
   });
 
   // Tone buttons
-  btnFriendly?.addEventListener("click", () => { setTone("friendly"); doGenerate(true); });
-  btnNeutral ?.addEventListener("click", () => { setTone("neutral");  doGenerate(true); });
-  btnFormal  ?.addEventListener("click", () => { setTone("formal");   doGenerate(true); });
+  btnFriendly?.addEventListener("click", () => { setTone("friendly"); doGenerate(); });
+  btnNeutral ?.addEventListener("click", () => { setTone("neutral");  doGenerate(); });
+  btnFormal  ?.addEventListener("click", () => { setTone("formal");   doGenerate(); });
 
   // Restore last tone preference
   chrome.storage.sync.get({ lastTone: null }, ({ lastTone }) => {
@@ -233,19 +227,18 @@ genBtn.addEventListener("click", () => doGenerate(true));
 
   // --- SPA navigation watcher ---
   function initPanelAgainSafely() {
-    const { x } = refreshDetailFromExtraction();
-    if (!variants.length && !busy) {
-      doGenerate(false);
-    } else {
-      updateCount();
+    if (window.extractProfileSmart) {
+      window.extractProfileSmart().then(x => {
+        setDetailHint(x.detailHint || "");
+        console.log("[LN][nav] refreshed", { name: x.name, company: x.company, detailHint: x.detailHint });
+      }).catch(err => console.warn("[LN][nav] refresh failed", err));
     }
-    console.log("[LN][nav] refreshed", { name: x.name, company: x.company, detailHint: x.detailHint });
   }
 
-  let lastPath = location.pathname;
+  let __ln_lastPath = location.pathname;
   setInterval(() => {
-    if (location.pathname !== lastPath) {
-      lastPath = location.pathname;
+    if (location.pathname !== __ln_lastPath) {
+      __ln_lastPath = location.pathname;
       setTimeout(() => initPanelAgainSafely(), 400);
     }
   }, 800);

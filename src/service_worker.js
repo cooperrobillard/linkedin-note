@@ -3,17 +3,14 @@ console.log("[LN] service worker loaded");
 
 // --- Helpers ---
 
-function addGreeting(text, firstName="", tone="neutral") {
-  const core = (text || "").trim();
-  if (!core) return "";
-
-  const token = (firstName || "").trim() || "there";
-  const leading = core.replace(/^(hi|hello|hey|dear)\b[^A-Za-z0-9]*[A-Za-z0-9'.-]*[^A-Za-z0-9]*[\s,–—-]*/i, "").replace(/^[\s,–—-]+/, "").trim();
-  const greetingWord = tone === "formal" ? "Hello" : "Hi";
-  const base = `${greetingWord} ${token},`;
-  if (!leading) return base;
-  const body = leading.charAt(0).toUpperCase() + leading.slice(1);
-  return `${base} ${body}`;
+function ensureGreeting(text, firstName, fallbackName) {
+  const first = (firstName || fallbackName || "").trim() || "there";
+  let out = String(text || "");
+  out = out.replace(/^\s*(hi|hello)\s+[^,]*,?\s*/i, "");
+  out = out.replace(/^[\s,–—-]+/, "").trim();
+  if (!out) out = "Good to connect.";
+  const cap = out.charAt(0).toUpperCase() + out.slice(1);
+  return `Hi ${first}, ${cap}`.trim();
 }
 function detectFocus(userGuidance="") {
   const g = (userGuidance || "").toLowerCase();
@@ -28,24 +25,15 @@ function buildMessages({
   identityLine, company, includeCompany, companyInterestTemplate,
   tone, profileSummary, name, firstName, userGuidance, detailHint
 }) {
-  const focus = detectFocus(userGuidance);
-  const companyLine = includeCompany && company
-    ? companyInterestTemplate.replace("{{company}}", company)
-    : "";
-
   const toneLine = ({
     friendly: "Tone: friendly, conversational, use contractions.",
     neutral: "Tone: clear, natural, use contractions.",
     formal: "Tone: concise and professional (still warm)."
   })[tone] || "Tone: clear, natural, use contractions.";
 
-  const focusLine = {
-    education: "Focus hint: prefer education-related detail if present.",
-    activity: "Focus hint: prefer recent activity/post if present.",
-    experience: "Focus hint: prefer a concrete experience bullet or current role detail.",
-    skills: "Focus hint: prefer a specific skill from the summary.",
-    auto: "Focus hint: choose the single strongest detail."
-  }[focus] || "";
+  const companyLine = includeCompany && company
+    ? companyInterestTemplate.replace("{{company}}", company)
+    : "";
 
   const system = [
     "You write short LinkedIn connection notes for a student.",
@@ -53,13 +41,12 @@ function buildMessages({
     "No emojis, no links, no meeting ask.",
     `Include verbatim identity line: "${identityLine}"`,
     "Reference EXACTLY ONE concrete detail from the profile summary.",
-    "Open with a personal greeting: \"Hi {name}, ...\". Use the provided firstName if available.",
+    "Open with a personal greeting: “Hi {name}, …”. Use firstName if provided.",
     "Avoid templated closers; vary or omit if forced.",
     toneLine,
-    focusLine,
-    companyLine ? `Company interest line to weave in if natural: ${companyLine}` : "",
     userGuidance ? `User guidance (must consider): ${userGuidance}` : "",
-    detailHint ? `Detail hint (prefer referencing this): ${detailHint}` : ""
+    detailHint ? `Detail hint (prefer referencing this): ${detailHint}` : "",
+    companyLine ? `Company interest line to weave in if natural: ${companyLine}` : ""
   ].filter(Boolean).join("\n");
 
   const user = JSON.stringify({
@@ -94,22 +81,6 @@ function preferByGuidance(variants, focus, profileSummary) {
   return [...variants].sort((a,b) => score(b) - score(a));
 }
 
-function toneShape(v, tone) {
-  if (tone === "friendly") {
-    let s = v.replace(/—/g, ",").trim();
-    s = s.replace(/^hello\b/i, "Hi");
-    s = s.replace(/\s{2,}/g, " ").trim();
-    return s;
-  }
-  if (tone === "formal") {
-    let s = v;
-    s = s.replace(/\s{2,}/g, " ").trim();
-    if (!/[.!?]$/.test(s)) s += ".";
-    return s;
-  }
-  return v;
-}
-
 function fixAlumniClaims(s) {
   let out = s || "";
   out = out.replace(/\bfellow\s+([A-Za-z.&\s]+?)\s+alum(nus|na|ni)?\b/gi, "BC student reaching out to alumni");
@@ -134,15 +105,14 @@ function fixSchoolAsEmployer(s) {
   return out;
 }
 
-function formatVariants(candidates, focus, profileSummary, tone, firstName) {
+function formatVariants(candidates, focus, profileSummary, tone, firstName, name) {
   let out = (candidates || []).filter(Boolean);
   if (!out.length) return [];
   out = preferByGuidance(out, focus, profileSummary);
   return out.map(v => {
-    const shaped = toneShape(v, tone);
-    const fixed = fixSchoolAsEmployer(fixAlumniClaims(shaped));
+    const fixed = fixSchoolAsEmployer(fixAlumniClaims(v));
     const polished = polishAndClamp(fixed);
-    const greeted = addGreeting(polished, firstName, tone);
+    const greeted = ensureGreeting(polished, firstName, name);
     return polishAndClamp(greeted);
   });
 }
@@ -181,7 +151,7 @@ function templateNote({ name, firstName, identityLine, company, includeCompany, 
 
   const core = coreParts.join(" ").replace(/\s{2,}/g, " ").trim();
   const polished = polishAndClamp(core);
-  return addGreeting(polished, firstName || name, tone);
+  return ensureGreeting(polished, firstName, name);
 }
 
 // --- simple rate limit ---
@@ -247,20 +217,20 @@ lastCall = Date.now();
     const cfg = await chrome.storage.sync.get(defaults);
     const { apiKey, apiBase, model, identityLine, companyInterestTemplate, tone, includeCompany } = cfg;
 
-    const { name, firstName, company, profileSummary, detailHint, toneOverride, userGuidance: guidanceRaw } = msg.payload || {};
-    let userGuidance = guidanceRaw || "";
-    if (userGuidance) {
-      userGuidance = userGuidance.replace(/\bbc\s+alum(nus|na|ni)?\b/gi, "BC alumni connection (sender is a current BC student)");
+    const { name, firstName, company, profileSummary, detailHint, toneOverride, userGuidance } = msg.payload || {};
+    let guidance = userGuidance || "";
+    if (guidance) {
+      guidance = guidance.replace(/\bbc\s+alum(nus|na|ni)?\b/gi, "BC alumni connection (sender is a current BC student)");
     }
     const toneActive = toneOverride || tone;
-    const focus = detectFocus(userGuidance);
+    const focus = detectFocus(guidance);
     const nameForGreeting = (firstName || name || "").trim();
     console.log("[LN][recv]", {
       name,
       firstName: nameForGreeting,
       company,
       detailHint,
-      guidance: userGuidance ? userGuidance.slice(0, 120) : "",
+      guidance: guidance ? guidance.slice(0, 120) : "",
       toneOverride
     });
 
@@ -273,7 +243,7 @@ lastCall = Date.now();
       profileSummary,
       name,
       firstName: nameForGreeting,
-      userGuidance,
+      userGuidance: guidance,
       detailHint
     });
 
@@ -286,7 +256,7 @@ lastCall = Date.now();
 
     if (!apiKey) {
       console.error("[LN] missing API key");
-      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting);
+      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name);
       console.log("[LN][raw]", []);
       console.log("[LN][variants]", fallbackVariants);
       sendResponse({ error: "NO_API_KEY", fallback: fallbackVariants[0] || fallbackTemplate });
@@ -338,7 +308,7 @@ frequency_penalty: 0.3
         const payload = {
           status,
           body: (apiMsg || "").slice(0, 500),
-          variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting)
+          variants: formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name)
         };
         console.log("[LN][raw]", []);
         console.log("[LN][variants]", payload.variants);
@@ -360,14 +330,14 @@ frequency_penalty: 0.3
       const candidates = raw.length
         ? raw
         : [ fallbackTemplate ];
-      const variants = formatVariants(candidates, focus, profileSummary, toneActive, nameForGreeting);
+      const variants = formatVariants(candidates, focus, profileSummary, toneActive, nameForGreeting, name);
       console.log("[LN] guidance focus:", focus, variants);
       console.log("[LN][variants]", variants);
 
       sendResponse({ variants });
     } catch (err) {
       console.error("[LN] fetch failed", err);
-      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting);
+      const fallbackVariants = formatVariants([fallbackTemplate], focus, profileSummary, toneActive, nameForGreeting, name);
       console.log("[LN][raw]", []);
       console.log("[LN][variants]", fallbackVariants);
       sendResponse({
