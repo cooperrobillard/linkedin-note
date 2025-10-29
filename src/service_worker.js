@@ -25,8 +25,8 @@ function buildMessages({
 
   const toneSystem = {
     neutral: [
-      "Tone: clear, natural, professional; contractions OK; no slang; no emoji.",
-      "Avoid em dashes unless they improve flow."
+      "Tone: warm, natural, human; light contractions welcome; avoid stiff corporate phrasing.",
+      "Keep it approachable and confident; no emoji."
     ].join(" "),
     friendly: [
       "Tone: texting a friend; very casual; lower-case greeting; short and punchy; a little slang is fine; no emoji.",
@@ -36,7 +36,7 @@ function buildMessages({
       "Tone: very professional, as if emailing a professor; fully grammatical; polished; no slang; can be 1–2 sentences if needed.",
       "You may start with 'Dear {name},' or 'Hello {name},'."
     ].join(" ")
-  }[tone] || "Tone: clear and natural.";
+  }[tone] || "Tone: warm and natural.";
 
   const guidanceHardRule = userGuidance
     ? `User guidance (highest priority): "${userGuidance}". You MUST reflect this guidance explicitly in what detail you reference and how you phrase the note.`
@@ -53,6 +53,8 @@ function buildMessages({
   const rules = [
     guidanceHardRule,
     focusHints,
+    "First words must be a greeting like \"Hi {name},\" (use \"Hi there,\" if you don't have the name).",
+    "Write in a warm, conversational voice; make it sound human and lightly personal, not robotic.",
     "Length: <=200 characters total.",
     "No emojis. No links. No phone/meeting ask.",
     `Include verbatim: "${identityLine}"`,
@@ -145,6 +147,36 @@ function fixSchoolAsEmployer(s) {
   return out;
 }
 
+function ensureGreeting(text, name, tone) {
+  let s = (text || "").trim();
+  if (!s) return s;
+
+  const target = (name || "").trim();
+  const placeholder = target || "there";
+  const toneWord = tone === "formal" ? "Hello" : "Hi";
+  const friendlyWord = tone === "friendly" ? "hi" : toneWord;
+
+  const hasGreeting = /^(hi|hello|hey|dear)\b/i.test(s);
+  if (hasGreeting) {
+    if (target && !new RegExp(`\\b${target.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(s.slice(0, 48))) {
+      s = s.replace(/^(hi|hello|hey|dear)(\s*)([,\-–—:]?)/i, (_m, word, space, punct) => {
+        const suffix = punct && punct.trim() ? punct : ",";
+        const spacer = space || " ";
+        return `${word}${spacer}${target}${suffix}`;
+      });
+    }
+    // Ensure we have a comma after the greeting for readability.
+    s = s.replace(/^(hi|hello|hey|dear)\s+([^,\s]+)(?![,\s])/i, (_m, word, who) => `${word} ${who},`);
+    return s;
+  }
+
+  const remainder = s.replace(/^[,.;:!\-–—]+/, "").trim();
+  const comma = ",";
+  const greeting = `${friendlyWord} ${placeholder}${comma}`;
+  if (!remainder) return greeting;
+  return `${greeting} ${remainder}`;
+}
+
 function formatVariants(candidates, focus, profileSummary, tone, name) {
   let out = (candidates || []).filter(Boolean);
   if (!out.length) return [];
@@ -152,7 +184,8 @@ function formatVariants(candidates, focus, profileSummary, tone, name) {
   return out.map(v => {
     const shaped = toneShape(v, tone, name);
     const fixed = fixSchoolAsEmployer(fixAlumniClaims(shaped));
-    return polishAndClamp(fixed);
+    const greeted = ensureGreeting(fixed, name, tone);
+    return polishAndClamp(greeted);
   });
 }
 
@@ -174,9 +207,18 @@ function pickDetailFromSummary(summary) {
 function templateNote({ name, identityLine, company, includeCompany, companyInterestTemplate, profileSummary }) {
   const detail = pickDetailFromSummary(profileSummary);
   const companyLine = includeCompany && company
-    ? " " + companyInterestTemplate.replace("{{company}}", company)
+    ? companyInterestTemplate.replace("{{company}}", company)
     : "";
-  const base = `Hi ${name || "there"}—${identityLine}.${companyLine} ${detail ? `Your ${detail} stood out—` : ""}happy to connect.`;
+
+  const pieces = [
+    `Hi ${name || "there"},`,
+    identityLine,
+    companyLine,
+    detail ? `Loved your ${detail}.` : "",
+    "Happy to connect."
+  ].filter(Boolean);
+
+  const base = pieces.join(" ");
   return polishAndClamp(base);
 }
 
